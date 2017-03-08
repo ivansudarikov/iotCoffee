@@ -65,6 +65,7 @@ void setup() {
 	callAndGetResponseESP8266("AT");
 	clearSerialBuffer();
 	digitalWrite(wiFiSetUpFinishedLed, ledState);
+	sendRequest("GET", "192.168.1.104", "8080", "register");
 }
 
 void releaseResources() {
@@ -137,7 +138,39 @@ void sendResponse(int ch_id, String status) {
 	espPort.println(header.length() + content.length());
 	delay(20);
 
-	if (espPort.find(">")) { // wait for esp input
+	printMessageContents(header, content);
+}
+
+void sendRequest(String method, String host, String port, String url) {
+	String header = method;
+	header += " /";
+	header += url;
+	header += " HTTP/1.1\r\nHost: ";
+	header += host;
+	header += "\r\n\r\n";
+	Serial.println(header);
+
+	String atCommand = "AT+CIPSTART=\"TCP\",\"";
+	atCommand += host;
+	atCommand += "\",";
+	atCommand += port;
+	atCommand += "\r\n";
+	espPort.print(atCommand);
+	espPort.print("AT+CIPSEND=44");
+	delay(20);
+	if (espPort.find(">")) {
+		espPort.print(header);
+		delay(200);
+	}
+	//printMessageContents(header, "");
+	Serial.println(atCommand);
+	String response = readESPOutput(10);
+	Serial.println(response);
+}
+
+void printMessageContents(String header, String content) {
+	if (espPort.find(">")) {
+		// wait for esp input
 		espPort.print(header);
 		espPort.print(content);
 		delay(200);
