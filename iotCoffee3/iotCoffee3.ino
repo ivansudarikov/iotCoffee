@@ -3,7 +3,7 @@
 SoftwareSerial espPort(10, 11);
 ////////////////////// RX, TX
 
-#define BUFFER_SIZE 128
+#define BUFFER_SIZE 256
 
 const int ledPin = 13;
 const int wiFiSetUpFinishedLed = 13;
@@ -17,13 +17,14 @@ void setup() {
 	pinMode(ledPin, OUTPUT);
 	pinMode(largeCoffeePin, OUTPUT);
 	init: releaseResources();
-	Serial.begin(9600); // Терминал
+	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
 	clearSerialBuffer();
 	if (!callAndGetResponseESP8266("AT+RST")) {
 		releaseResources();
 		goto init;
 	}
+
 	Serial.println("Wait start.");
 	for (int j = 0; j < 10; j++) {
 		delay(100);
@@ -37,35 +38,40 @@ void setup() {
 		goto init;
 	}
 
+	if (!callAndGetResponseESP8266("AT+CWAUTOCONN=0")) { // client mode
+		releaseResources();
+		goto init;
+	}
+
 	if (!connectToWiFi("HomeNet", "79045545893")) {
 		releaseResources();
 		goto init;
 	}
 
-	if (!callAndGetResponseESP8266("AT+CIPMODE=0")) { // сквозной режим передачи данных.
+	if (!callAndGetResponseESP8266("AT+CIPMODE=0")) { // normal transfer mode
 		releaseResources();
 		goto init;
 	}
 
 	delay(1000);
-	if (!callAndGetResponseESP8266("AT+CIPMUX=1")) { // multiple connection.
+	if (!callAndGetResponseESP8266("AT+CIPMUX=1")) { // allow multiple connection.
 		releaseResources();
 		goto init;
 	};
 
 	delay(1000);
-	if (!callAndGetResponseESP8266("AT+CIPSERVER=1,88")) { // set up ТСР-server on 88 port
+	if (!callAndGetResponseESP8266("AT+CIPSERVER=1,88")) { // set up server on 88 port
 		releaseResources();
 		goto init;
 	}
 	delay(1000);
 	callAndGetResponseESP8266("AT+CIPSTO=2"); // server timeout, 2 sec
 	delay(1000);
-	callAndGetResponseESP8266("AT+CIFSR"); // узнаём адрес
+	callAndGetResponseESP8266("AT+CIFSR"); // read IP configuration
 	callAndGetResponseESP8266("AT");
 	clearSerialBuffer();
+	sendRequest("GET", "192.168.1.104", "8080", "register/");
 	digitalWrite(wiFiSetUpFinishedLed, ledState);
-	sendRequest("GET", "192.168.1.104", "8080", "register");
 }
 
 void releaseResources() {
@@ -74,9 +80,9 @@ void releaseResources() {
 	clearSerialBuffer();
 }
 
-///////////////////основной цикл, принимает запрос от клиента///////////////////
 void loop() {
 	espPort.readBytesUntil('\n', buffer, BUFFER_SIZE);
+	Serial.print(buffer);
 	if (strncmp(buffer, "+IPD,", 5) == 0) {
 		int ch_id, packet_len;
 		char *pb;
@@ -137,38 +143,43 @@ void sendResponse(int ch_id, String status) {
 	espPort.print(",");
 	espPort.println(header.length() + content.length());
 	delay(20);
-
-	printMessageContents(header, content);
+	sendMessageContents(header, content);
 }
 
 void sendRequest(String method, String host, String port, String url) {
 	String header = method;
-	header += " /";
+	header += " http://";
+	header += host;
+	header += ":";
+	header += port;
+	header += "/";
 	header += url;
 	header += " HTTP/1.1\r\nHost: ";
 	header += host;
 	header += "\r\n\r\n";
-	Serial.println(header);
 
-	String atCommand = "AT+CIPSTART=\"TCP\",\"";
+	String atCommand = "AT+CIPSTART=0,\"TCP\",\"";
 	atCommand += host;
 	atCommand += "\",";
 	atCommand += port;
-	atCommand += "\r\n";
-	espPort.print(atCommand);
-	espPort.print("AT+CIPSEND=44");
-	delay(20);
-	if (espPort.find(">")) {
-		espPort.print(header);
-		delay(200);
+	boolean startedConnection = callAndGetResponseESP8266(atCommand);
+	delay(1000);
+	if (startedConnection) {
+		espPort.print("AT+CIPSEND=0,");
+		espPort.println((int) header.length());
+		sendMessageContents(header, "");
+		delay(1000);
+		Serial.print(readESPOutput(false, 100));
+		delay(1000);
+		Serial.print(readESPOutput(false, 100));
+		delay(1000);
+		Serial.print(readESPOutput(false, 100));
+	} else {
+		Serial.print("Connect failed.");
 	}
-	//printMessageContents(header, "");
-	Serial.println(atCommand);
-	String response = readESPOutput(10);
-	Serial.println(response);
 }
 
-void printMessageContents(String header, String content) {
+void sendMessageContents(String header, String content) {
 	if (espPort.find(">")) {
 		// wait for esp input
 		espPort.print(header);
@@ -195,6 +206,10 @@ boolean readESPOutput() {
 }
 
 String readESPOutput(int attempts) {
+	return readESPOutput(true, attempts);
+}
+
+String readESPOutput(boolean waitForOk, int attempts) {
 	String espResponse;
 	String temp;
 	int waitTimes = 0;
@@ -207,7 +222,7 @@ String readESPOutput(int attempts) {
 		delay(10 * waitTimes);
 	}
 
-	if (espResponse.indexOf("OK") > -1) {
+	if (waitForOk && espResponse.indexOf("OK") > -1) {
 		// found OK -> assume finished
 		return espResponse;
 	}
@@ -225,7 +240,7 @@ boolean connectToWiFi(String networkSSID, String networkPASS) {
 	cmd += "\"";
 
 	espPort.println(cmd);
-	String response = readESPOutput(15);
+	String response = readESPOutput(25);
 	Serial.println(response);
 	return true;
 }
@@ -234,6 +249,7 @@ void clearSerialBuffer(void) {
 	while (espPort.available() > 0) {
 		espPort.read();
 	}
+	espPort.flush();
 }
 
 void clearBuffer(void) {
