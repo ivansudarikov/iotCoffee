@@ -9,6 +9,8 @@ const int ledPin = 13;
 const int wiFiSetUpFinishedLed = 13;
 const int largeCoffeePin = 9;
 const int smallCoffeePin = 8;
+const String stationType = "MACHINE";
+const String stationOpenedPort = "88";
 
 int ledState = HIGH;
 char buffer[BUFFER_SIZE];
@@ -24,14 +26,6 @@ void setup() {
 		releaseResources();
 		goto init;
 	}
-
-	Serial.println("Wait start.");
-	for (int j = 0; j < 10; j++) {
-		delay(100);
-	}
-	Serial.println("Wait end.");
-	clearSerialBuffer();
-	delay(1000);
 	clearSerialBuffer();
 	if (!callAndGetResponseESP8266("AT+CWMODE=1")) { // client mode
 		releaseResources();
@@ -53,25 +47,45 @@ void setup() {
 		goto init;
 	}
 
-	delay(1000);
 	if (!callAndGetResponseESP8266("AT+CIPMUX=1")) { // allow multiple connection.
 		releaseResources();
 		goto init;
 	};
 
-	delay(1000);
-	if (!callAndGetResponseESP8266("AT+CIPSERVER=1,88")) { // set up server on 88 port
+	if (!callAndGetResponseESP8266("AT+CIPSERVER=1," + stationOpenedPort)) { // set up server on 88 port
 		releaseResources();
 		goto init;
 	}
 	delay(1000);
 	callAndGetResponseESP8266("AT+CIPSTO=2"); // server timeout, 2 sec
 	delay(1000);
-	callAndGetResponseESP8266("AT+CIFSR"); // read IP configuration
-	callAndGetResponseESP8266("AT");
+	String ipAddress = getCurrentAssignedIP();
+	if (NULL == ipAddress) {
+		goto init;
+	}
 	clearSerialBuffer();
-	sendRequest("GET", "192.168.1.104", "8080", "register/");
+	String ipAddressPayload = "{\"ipAddress\" :\"";
+	ipAddressPayload+= ipAddress;
+	ipAddressPayload+= "\", \"type\":\"";
+	ipAddressPayload+= stationType;
+	ipAddressPayload+= "\",\"openedPort\":\"";
+	ipAddressPayload+= stationOpenedPort;
+	ipAddressPayload+= "\"}";
+	sendRequest("POST", "192.168.1.102", "8080", "coffee/register/", ipAddressPayload);
 	digitalWrite(wiFiSetUpFinishedLed, ledState);
+}
+
+String getCurrentAssignedIP() {
+	espPort.println("AT+CIFSR"); // read IP configuration
+	String ipResponse = readESPOutput(false, 15);
+	int ipStartIndex = ipResponse.indexOf("STAIP,\"");
+	if (ipStartIndex > -1) {
+		ipResponse = ipResponse.substring(ipStartIndex + 7,
+				ipResponse.indexOf("\"\r"));
+	} else {
+		ipResponse = (String) NULL;
+	}
+	return ipResponse;
 }
 
 void releaseResources() {
@@ -146,34 +160,34 @@ void sendResponse(int ch_id, String status) {
 	sendMessageContents(header, content);
 }
 
-void sendRequest(String method, String host, String port, String url) {
+void sendRequest(String method, String host, String port, String url,
+		String payload) {
 	String header = method;
-	header += " http://";
+	header += " /";
+	header += url;
+	header += " HTTP/1.1\r\n";
+	header += "Content-Type: application/json\r\n";
+	header += "Content-Length: ";
+	header += (int) (payload.length());
+	header += "\r\n";
+	header += "Host: ";
 	header += host;
 	header += ":";
 	header += port;
-	header += "/";
-	header += url;
-	header += " HTTP/1.1\r\nHost: ";
-	header += host;
-	header += "\r\n\r\n";
+	header += "\r\n";
+	header += "Connection: close\r\n\r\n";
 
 	String atCommand = "AT+CIPSTART=0,\"TCP\",\"";
 	atCommand += host;
 	atCommand += "\",";
 	atCommand += port;
 	boolean startedConnection = callAndGetResponseESP8266(atCommand);
-	delay(1000);
 	if (startedConnection) {
 		espPort.print("AT+CIPSEND=0,");
-		espPort.println((int) header.length());
-		sendMessageContents(header, "");
-		delay(1000);
-		Serial.print(readESPOutput(false, 100));
-		delay(1000);
-		Serial.print(readESPOutput(false, 100));
-		delay(1000);
-		Serial.print(readESPOutput(false, 100));
+		espPort.println((int) (header.length() + payload.length()));
+		sendMessageContents(header, payload);
+		Serial.print(readESPOutput(false, 25));
+		Serial.print(readESPOutput(false, 25));
 	} else {
 		Serial.print("Connect failed.");
 	}
@@ -194,7 +208,7 @@ boolean callAndGetResponseESP8266(String atCommandString) {
 }
 
 boolean readESPOutput() {
-	String response = readESPOutput(10);
+	String response = readESPOutput(15);
 	Serial.println(response);
 	boolean ok = response.indexOf("OK") > -1;
 	if (ok) {
