@@ -9,11 +9,25 @@ const int ledPin = 13;
 const int wiFiSetUpFinishedLed = 13;
 const int largeCoffeePin = 9;
 const int smallCoffeePin = 8;
+const String stationName = "Marco Polo";
 const String stationType = "MACHINE";
 const String stationOpenedPort = "88";
 
 int ledState = HIGH;
 char buffer[BUFFER_SIZE];
+
+String getRegisterJsonPayload(const String& ipAddress) {
+	String ipAddressPayload = "{\"ipAddress\" :\"";
+	ipAddressPayload += ipAddress;
+	ipAddressPayload += "\", \"type\":\"";
+	ipAddressPayload += stationType;
+	ipAddressPayload += "\",\"openedPort\":\"";
+	ipAddressPayload += stationOpenedPort;
+	ipAddressPayload += "\",\"componentName\":\"";
+	ipAddressPayload += stationName;
+	ipAddressPayload += "\"}";
+	return ipAddressPayload;
+}
 
 void setup() {
 	pinMode(ledPin, OUTPUT);
@@ -64,13 +78,7 @@ void setup() {
 		goto init;
 	}
 	clearSerialBuffer();
-	String ipAddressPayload = "{\"ipAddress\" :\"";
-	ipAddressPayload+= ipAddress;
-	ipAddressPayload+= "\", \"type\":\"";
-	ipAddressPayload+= stationType;
-	ipAddressPayload+= "\",\"openedPort\":\"";
-	ipAddressPayload+= stationOpenedPort;
-	ipAddressPayload+= "\"}";
+	String ipAddressPayload = getRegisterJsonPayload(ipAddress);
 	sendRequest("POST", "192.168.1.102", "8080", "coffee/register/", ipAddressPayload);
 	digitalWrite(wiFiSetUpFinishedLed, ledState);
 }
