@@ -17,7 +17,7 @@ const String serverHost = "192.168.1.102"; // IoT server host
 const String serverPort = "8080";
 const String ERROR = "ERROR";
 const String MOVE_BACK = "MOVE_BACK";
-const String MOVE_TO_PLATFORM = "MOVE_TO_PLATFORM";
+const String MOVE_TO_MACHINE = "MOVE_TO_MACHINE";
 
 int ledState = HIGH;
 char buffer[BUFFER_SIZE];
@@ -133,7 +133,7 @@ void processIncomingRequest() {
 			String moveType;
 			if (strcasestr(pb, "/move/to") != NULL) {
 				ledState = HIGH;
-				moveType = MOVE_TO_PLATFORM;
+				moveType = MOVE_TO_MACHINE;
 			} else if (strcasestr(pb, "/move/back") != NULL) {
 				ledState = LOW;
 				moveType = MOVE_BACK;
@@ -155,8 +155,8 @@ void processIncomingRequest() {
 }
 
 boolean movePlatform(String moveType) {
-	if (moveType.equals(MOVE_TO_PLATFORM)) {
-		// MOVE TO PLATFORM
+	if (moveType.equals(MOVE_TO_MACHINE)) {
+		// MOVE TO MACHINE
 	} else {
 		// MOVE TO CLIENT
 	}
