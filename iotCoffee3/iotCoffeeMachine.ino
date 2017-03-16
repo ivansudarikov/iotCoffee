@@ -5,22 +5,23 @@ SoftwareSerial espPort(10, 11);
 
 #define BUFFER_SIZE 256
 
-const int wiFiInitiatedPin = 13;
+const int requestProcessedPin = 12;
 const int wiFiSetUpFinishedLed = 13;
+
 const int largeCoffeePin = 9;
 const int smallCoffeePin = 8;
-const String stationName = "Marco Polo";
-const String stationType = "MACHINE";
+
+const String stationName = "Marco Polo"; //AppoloMini
+const String stationType = "MACHINE"; // PLATFORM
 const String stationOpenedPort = "88";
+
+const String serverHost = "192.168.1.102";
+const String serverPort = "8080";
 
 int ledState = HIGH;
 char buffer[BUFFER_SIZE];
 
-
-
-void setup() {
-	pinMode(wiFiInitiatedPin, OUTPUT);
-	pinMode(largeCoffeePin, OUTPUT);
+void setupWiFiConnection() {
 	init: releaseResources();
 	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
@@ -30,32 +31,32 @@ void setup() {
 		goto init;
 	}
 	clearSerialBuffer();
-	if (!callAndGetResponseESP8266("AT+CWMODE=1")) { // client mode
+	if (!callAndGetResponseESP8266("AT+CWMODE=1")) {
+		// client mode
 		releaseResources();
 		goto init;
 	}
-
-	if (!callAndGetResponseESP8266("AT+CWAUTOCONN=0")) { // client mode
+	if (!callAndGetResponseESP8266("AT+CWAUTOCONN=0")) {
+		// client mode
 		releaseResources();
 		goto init;
 	}
-
 	if (!connectToWiFi("HomeNet", "79045545893")) {
 		releaseResources();
 		goto init;
 	}
-
-	if (!callAndGetResponseESP8266("AT+CIPMODE=0")) { // normal transfer mode
+	if (!callAndGetResponseESP8266("AT+CIPMODE=0")) {
+		// normal transfer mode
 		releaseResources();
 		goto init;
 	}
-
-	if (!callAndGetResponseESP8266("AT+CIPMUX=1")) { // allow multiple connection.
+	if (!callAndGetResponseESP8266("AT+CIPMUX=1")) {
+		// allow multiple connection.
 		releaseResources();
 		goto init;
 	};
-
-	if (!callAndGetResponseESP8266("AT+CIPSERVER=1," + stationOpenedPort)) { // set up server on 88 port
+	if (!callAndGetResponseESP8266("AT+CIPSERVER=1," + stationOpenedPort)) {
+		// set up server on 88 port
 		releaseResources();
 		goto init;
 	}
@@ -65,8 +66,14 @@ void setup() {
 		goto init;
 	}
 	clearSerialBuffer();
-	sendRequest("POST", "192.168.1.102", "8080", "coffee/register/",
+	sendRequestToServer("POST", "coffee/register/",
 			getRegisterJsonPayload(ipAddress));
+}
+
+void setup() {
+	pinMode(requestProcessedPin, OUTPUT);
+	pinMode(largeCoffeePin, OUTPUT);
+	setupWiFiConnection();
 	digitalWrite(wiFiSetUpFinishedLed, ledState);
 }
 
@@ -88,8 +95,6 @@ void releaseResources() {
 	espPort.end();
 	clearSerialBuffer();
 }
-
-
 
 /**
  * Main loop.
@@ -132,7 +137,7 @@ void processIncomingRequest() {
 			}
 
 			sendResponse(ch_id, status);
-			digitalWrite(wiFiInitiatedPin, ledState);
+			digitalWrite(requestProcessedPin, ledState);
 			digitalWrite(coffePin, HIGH);
 			delay(100);
 			digitalWrite(coffePin, LOW);
@@ -163,6 +168,10 @@ void sendResponse(int ch_id, String status) {
 	espPort.println(header.length() + content.length());
 	delay(20);
 	sendMessageContents(header, content);
+}
+
+void sendRequestToServer(String method, String url, String jsonPayload) {
+	sendRequest(method, serverHost, serverPort, url, jsonPayload);
 }
 
 /**
