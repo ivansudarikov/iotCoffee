@@ -3,7 +3,7 @@
 SoftwareSerial espPort(10, 11);
 ////////////////////// RX, TX
 
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 96
 
 const int requestProcessedPin = 12;
 const int wiFiSetUpFinishedLed = 13;
@@ -11,18 +11,12 @@ const int wiFiSetUpFinishedLed = 13;
 const int largeCoffeePin = 9;
 const int smallCoffeePin = 8;
 
-const String stationName = "Marco Polo"; //AppoloMini
-const String stationType = "MACHINE"; // PLATFORM
-const String stationOpenedPort = "88";
-
-const String serverHost = "192.168.1.102";
-const String serverPort = "8080";
-
 int ledState = HIGH;
 char buffer[BUFFER_SIZE];
 
 void setupWiFiConnection() {
 	init: releaseResources();
+	espPort.setTimeout(1500);
 	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
 	clearSerialBuffer();
@@ -55,37 +49,36 @@ void setupWiFiConnection() {
 		releaseResources();
 		goto init;
 	};
-	if (!callAndGetResponseESP8266("AT+CIPSERVER=1," + stationOpenedPort)) {
+	if (!callAndGetResponseESP8266("AT+CIPSERVER=1,88")) {
 		// set up server on 88 port
 		releaseResources();
 		goto init;
 	}
+	clearSerialBuffer();
 	callAndGetResponseESP8266("AT+CIPSTO=2"); // server timeout, 2 sec
 	String ipAddress = getCurrentAssignedIP();
-	if (NULL == ipAddress) {
+	if (ipAddress.indexOf("0.0.0.0") > -1) {
 		goto init;
 	}
-	clearSerialBuffer();
-	sendRequestToServer("POST", "coffee/register/",
-			getRegisterJsonPayload(ipAddress));
+	sendRequestToServer("POST", "coffee/register/", getRegisterJsonPayload(ipAddress));
 }
 
 void setup() {
+	setupWiFiConnection();
 	pinMode(requestProcessedPin, OUTPUT);
 	pinMode(largeCoffeePin, OUTPUT);
-	setupWiFiConnection();
 	digitalWrite(wiFiSetUpFinishedLed, ledState);
 }
 
 String getCurrentAssignedIP() {
 	espPort.println("AT+CIFSR"); // read IP configuration
-	String ipResponse = readESPOutput(false, 15);
+	String ipResponse = readESPOutput(true, 20);
 	int ipStartIndex = ipResponse.indexOf("STAIP,\"");
 	if (ipStartIndex > -1) {
 		ipResponse = ipResponse.substring(ipStartIndex + 7,
 				ipResponse.indexOf("\"\r"));
 	} else {
-		ipResponse = (String) NULL;
+		ipResponse = "0.0.0.0";
 	}
 	return ipResponse;
 }
@@ -145,6 +138,13 @@ void processIncomingRequest() {
 	}
 }
 
+void cipSend(int ch_id, const String& header, const String& content) {
+	espPort.print("AT+CIPSEND=");
+	espPort.print(ch_id);
+	espPort.print(",");
+	espPort.println(header.length() + content.length());
+}
+
 void sendResponse(int ch_id, String status) {
 	String header;
 
@@ -162,23 +162,17 @@ void sendResponse(int ch_id, String status) {
 	header += (int) (content.length());
 	header += "\r\n\r\n";
 
-	espPort.print("AT+CIPSEND=");
-	espPort.print(ch_id);
-	espPort.print(",");
-	espPort.println(header.length() + content.length());
+	cipSend(ch_id, header, content);
 	delay(20);
 	sendMessageContents(header, content);
 }
 
 void sendRequestToServer(String method, String url, String jsonPayload) {
-	sendRequest(method, serverHost, serverPort, url, jsonPayload);
+	sendRequest(method, "192.168.1.102", "8080", url, jsonPayload);
 }
 
-/**
- * Sends HTTP (of specified method) request to given host:port and specified url.
- */
-void sendRequest(String method, String host, String port, String url,
-		String jsonPayload) {
+void performRealSend(const String& method, const String& url,
+		String jsonPayload, String host, String port) {
 	String header = method;
 	header += " /";
 	header += url;
@@ -193,20 +187,26 @@ void sendRequest(String method, String host, String port, String url,
 	header += port;
 	header += "\r\n";
 	header += "Connection: close\r\n\r\n";
+	cipSend(0, header, jsonPayload);
+	sendMessageContents(header, jsonPayload);
+	Serial.print(readESPOutput(false, 15));
+}
 
+/**
+ * Sends HTTP (of specified method) request to given host:port and specified url.
+ */
+void sendRequest(String method, String host, String port, String url,
+		String jsonPayload) {
 	String atCommand = "AT+CIPSTART=0,\"TCP\",\"";
 	atCommand += host;
 	atCommand += "\",";
 	atCommand += port;
 	boolean startedConnection = callAndGetResponseESP8266(atCommand);
+
 	if (startedConnection) {
-		espPort.print("AT+CIPSEND=0,");
-		espPort.println((int) (header.length() + jsonPayload.length()));
-		sendMessageContents(header, jsonPayload);
-		Serial.print(readESPOutput(false, 35));
-		Serial.print(readESPOutput(false, 25));
+		performRealSend(method, url, jsonPayload, host, port);
 	} else {
-		Serial.print("Connection failed.");
+		Serial.print("Failed.");
 	}
 }
 
@@ -227,11 +227,12 @@ void sendMessageContents(String header, String content) {
  */
 boolean callAndGetResponseESP8266(String atCommandString) {
 	espPort.println(atCommandString);
+	delay(500);
 	return readESPOutput();
 }
 
 /**
- * Reads ESP output for 15 attempts and searches for OK string in response.
+ * Reads ESP output for 20 attempts and searches for OK string in response.
  * returns true if response contains OK, otherwise false.
  */
 boolean readESPOutput() {
@@ -263,7 +264,6 @@ String readESPOutput(boolean waitForOk, int attempts) {
 		temp = espPort.readString();
 		espResponse += temp;
 		espResponse.trim();
-		delay(10 * waitTimes);
 	}
 
 	if (waitForOk && espResponse.indexOf("OK") > -1) {
@@ -293,7 +293,9 @@ void clearSerialBuffer(void) {
 	while (espPort.available() > 0) {
 		espPort.read();
 	}
-	espPort.flush();
+	while (Serial.available() > 0) {
+		Serial.read();
+	}
 }
 
 void clearBuffer(void) {
@@ -302,16 +304,12 @@ void clearBuffer(void) {
 	}
 }
 
-String getRegisterJsonPayload(const String& ipAddress) {
-	String ipAddressPayload = "{\"ipAddress\" :\"";
+String getRegisterJsonPayload(const String ipAddress) {
+	String ipAddressPayload = "{\"ip\" :\"";
 	ipAddressPayload += ipAddress;
-	ipAddressPayload += "\", \"type\":\"";
-	ipAddressPayload += stationType;
-	ipAddressPayload += "\",\"openedPort\":\"";
-	ipAddressPayload += stationOpenedPort;
-	ipAddressPayload += "\",\"componentName\":\"";
-	ipAddressPayload += stationName;
-	ipAddressPayload += "\"}";
+	// Change ip address and here
+	ipAddressPayload +=
+				"\", \"ty\":\"MACHINE\",\"port\":\"88\",\"name\":\"Polo\"}";
 	return ipAddressPayload;
 }
 
