@@ -1,22 +1,22 @@
 #include "Arduino.h"
 #include <SoftwareSerial.h>
 SoftwareSerial espPort(10, 11);
-////////////////////// RX, TX
+///////////////ARDUINO RX, TX -> TX, RX esp8266
 
 #define BUFFER_SIZE 96
 
 const int requestProcessedPin = 12;
 const int wiFiSetUpFinishedLed = 13;
 
-const int largeCoffeePin = 9;
-const int smallCoffeePin = 8;
+const int largeCoffeePin = 4;
+const int smallCoffeePin = 2;
 
 int ledState = HIGH;
 char buffer[BUFFER_SIZE];
 
 void setupWiFiConnection() {
 	init: releaseResources();
-	espPort.setTimeout(1500);
+	espPort.setTimeout(1000);
 	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
 	clearSerialBuffer();
@@ -60,10 +60,19 @@ void setupWiFiConnection() {
 	if (ipAddress.indexOf("0.0.0.0") > -1) {
 		goto init;
 	}
-	sendRequestToServer("POST", "coffee/register/", getRegisterJsonPayload(ipAddress));
+	if (!sendRequestToServer("POST", "coffee/register/",
+			getRegisterJsonPayload(ipAddress))) {
+		while (true) {
+			digitalWrite(wiFiSetUpFinishedLed, HIGH);
+			delay(1000);
+			digitalWrite(wiFiSetUpFinishedLed, LOW);
+			delay(1000);
+		}
+	}
 }
 
 void setup() {
+	pinMode(wiFiSetUpFinishedLed, OUTPUT);
 	setupWiFiConnection();
 	pinMode(requestProcessedPin, OUTPUT);
 	pinMode(largeCoffeePin, OUTPUT);
@@ -119,21 +128,25 @@ void processIncomingRequest() {
 			String status;
 			if (strcasestr(pb, "/small") != NULL) {
 				ledState = HIGH;
-				coffePin = largeCoffeePin;
+				coffePin = smallCoffeePin;
 				status = "PROCESSING_SMALL";
 			} else if (strcasestr(pb, "/big") != NULL) {
 				ledState = LOW;
 				coffePin = largeCoffeePin;
 				status = "PROCESSING_BIG";
 			} else {
+				coffePin = -1;
 				status = "ERROR";
 			}
 
 			sendResponse(ch_id, status);
+
 			digitalWrite(requestProcessedPin, ledState);
-			digitalWrite(coffePin, HIGH);
-			delay(100);
-			digitalWrite(coffePin, LOW);
+			if (coffePin != -1) {
+				digitalWrite(coffePin, HIGH);
+				delay(100);
+				digitalWrite(coffePin, LOW);
+			}
 		}
 	}
 }
@@ -167,11 +180,11 @@ void sendResponse(int ch_id, String status) {
 	sendMessageContents(header, content);
 }
 
-void sendRequestToServer(String method, String url, String jsonPayload) {
-	sendRequest(method, "192.168.1.102", "8080", url, jsonPayload);
+boolean sendRequestToServer(String method, String url, String jsonPayload) {
+	return sendRequest(method, "192.168.1.110", "8080", url, jsonPayload);
 }
 
-void performRealSend(const String& method, const String& url,
+boolean performRealSend(const String& method, const String& url,
 		String jsonPayload, String host, String port) {
 	String header = method;
 	header += " /";
@@ -189,13 +202,13 @@ void performRealSend(const String& method, const String& url,
 	header += "Connection: close\r\n\r\n";
 	cipSend(0, header, jsonPayload);
 	sendMessageContents(header, jsonPayload);
-	Serial.print(readESPOutput(false, 15));
+	return readESPOutput(false, 15).indexOf("200 OK") > -1;
 }
 
 /**
  * Sends HTTP (of specified method) request to given host:port and specified url.
  */
-void sendRequest(String method, String host, String port, String url,
+boolean sendRequest(String method, String host, String port, String url,
 		String jsonPayload) {
 	String atCommand = "AT+CIPSTART=0,\"TCP\",\"";
 	atCommand += host;
@@ -204,9 +217,9 @@ void sendRequest(String method, String host, String port, String url,
 	boolean startedConnection = callAndGetResponseESP8266(atCommand);
 
 	if (startedConnection) {
-		performRealSend(method, url, jsonPayload, host, port);
+		return performRealSend(method, url, jsonPayload, host, port);
 	} else {
-		Serial.print("Failed.");
+		return false;
 	}
 }
 
@@ -309,7 +322,7 @@ String getRegisterJsonPayload(const String ipAddress) {
 	ipAddressPayload += ipAddress;
 	// Change ip address and here
 	ipAddressPayload +=
-				"\", \"ty\":\"MACHINE\",\"port\":\"88\",\"name\":\"Polo\"}";
+			"\", \"ty\":\"MACHINE\",\"port\":\"88\",\"name\":\"Polo\"}";
 	return ipAddressPayload;
 }
 
