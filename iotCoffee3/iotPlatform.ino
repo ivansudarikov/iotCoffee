@@ -1,29 +1,112 @@
 #include "Arduino.h"
 #include <SoftwareSerial.h>
+#include "Ultrasonic.h"
+SoftwareSerial espPort(12, 13);
+///////////////ARDUINO RX, TX -> TX, RX esp8266
+Ultrasonic ultrasonic(11, 10);
 
-SoftwareSerial espPort(10, 11);
-////////////////////// RX, TX
+#define BUFFER_SIZE 96
 
-#define BUFFER_SIZE 256
+// Моторы подключаются к клеммам M1+,M1-,M2+,M2-
+// Motor shield использует четыре контакта 6,5,7,4 для управления моторами
+#define SPEED_LEFT 6
+#define SPEED_RIGHT 5
+#define DIR_LEFT 7
+#define DIR_RIGHT 4
+#define LEFT_SENSOR_PIN 9
+#define RIGHT_SENSOR_PIN 8
 
-const int requestProcessedPin = 12;
-const int wiFiSetUpFinishedLed = 13;
+// Скорость, с которой мы движемся вперёд (0-255)
+#define SPEED 50
 
-const String stationName = "AppoloMini";
-const String stationType = "PLATFORM";
-const String stationOpenedPort = "88";
+// Скорость прохождения сложных участков
+#define SLOW_SPEED 50
 
-const String serverHost = "192.168.1.102"; // IoT server host
-const String serverPort = "8080";
-const String ERROR = "ERROR";
-const String MOVE_BACK = "MOVE_BACK";
-const String MOVE_TO_MACHINE = "MOVE_TO_MACHINE";
+#define BACK_SLOW_SPEED 30
+#define BACK_FAST_SPEED 50
 
-int ledState = HIGH;
+// Коэффициент, задающий во сколько раз нужно затормозить
+// одно из колёс для поворота
+
+#define BRAKE_K 4
+
+#define STATE_FORWARD 0
+#define STATE_RIGHT 1
+#define STATE_LEFT 2
+
+#define SPEED_STEP 2
+
+#define FAST_TIME_THRESHOLD 500
+
+int state = STATE_FORWARD;
+int currentSpeed = SPEED;
+int fastTime = 0;
+
 char buffer[BUFFER_SIZE];
+
+void runForward() {
+	analogWrite(SPEED_LEFT, currentSpeed);
+	analogWrite(SPEED_RIGHT, currentSpeed);
+
+	digitalWrite(DIR_LEFT, HIGH);
+	digitalWrite(DIR_RIGHT, HIGH);
+}
+
+void stepBack(int duration, int state) {
+	if (!duration)
+		return;
+
+// В зависимости от направления поворота при движении назад будем
+// делать небольшой разворот
+	int leftSpeed = (state == STATE_RIGHT) ? BACK_SLOW_SPEED : BACK_FAST_SPEED;
+	int rightSpeed = (state == STATE_LEFT) ? BACK_SLOW_SPEED : BACK_FAST_SPEED;
+
+	analogWrite(SPEED_LEFT, leftSpeed);
+	analogWrite(SPEED_RIGHT, rightSpeed);
+
+// реверс колёс
+	digitalWrite(DIR_RIGHT, LOW);
+	digitalWrite(DIR_LEFT, LOW);
+
+	delay(duration);
+}
+
+void steerRight() {
+	state = STATE_RIGHT;
+	fastTime = 0;
+
+// Замедляем правое колесо относительно левого,
+// чтобы начать поворот
+	analogWrite(SPEED_RIGHT, 0);
+	analogWrite(SPEED_LEFT, SPEED);
+
+	digitalWrite(DIR_LEFT, HIGH);
+	digitalWrite(DIR_RIGHT, HIGH);
+}
+
+void steerLeft() {
+	state = STATE_LEFT;
+	fastTime = 0;
+
+	analogWrite(SPEED_LEFT, 0);
+	analogWrite(SPEED_RIGHT, SPEED);
+
+	digitalWrite(DIR_LEFT, HIGH);
+	digitalWrite(DIR_RIGHT, HIGH);
+}
+
+void stopPlatfom() {
+
+	analogWrite(SPEED_LEFT, 0);
+	analogWrite(SPEED_RIGHT, 0);
+
+	digitalWrite(DIR_LEFT, LOW);
+	digitalWrite(DIR_RIGHT, LOW);
+}
 
 void setupWiFiConnection() {
 	init: releaseResources();
+	espPort.setTimeout(1000);
 	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
 	clearSerialBuffer();
@@ -42,7 +125,7 @@ void setupWiFiConnection() {
 		releaseResources();
 		goto init;
 	}
-	if (!connectToWiFi("HomeNet", "79045545893")) { // wifi ssid and pass
+	if (!connectToWiFi("HomeNet", "79045545893")) {
 		releaseResources();
 		goto init;
 	}
@@ -56,37 +139,43 @@ void setupWiFiConnection() {
 		releaseResources();
 		goto init;
 	};
-	if (!callAndGetResponseESP8266("AT+CIPSERVER=1," + stationOpenedPort)) {
+	if (!callAndGetResponseESP8266("AT+CIPSERVER=1,88")) {
 		// set up server on 88 port
 		releaseResources();
 		goto init;
 	}
+	clearSerialBuffer();
 	callAndGetResponseESP8266("AT+CIPSTO=2"); // server timeout, 2 sec
 	String ipAddress = getCurrentAssignedIP();
-	if (NULL == ipAddress) {
+	if (ipAddress.indexOf("0.0.0.0") > -1) {
 		goto init;
 	}
-	clearSerialBuffer();
-	sendRequestToServer("POST", "coffee/register/",
-			getRegisterJsonPayload(ipAddress));
+	if (!sendRequestToServer("POST", "coffee/register/",
+			getRegisterJsonPayload(ipAddress))) {
+		while (true) {
+			Serial.println("Crap");
+			delay(1000);
+		}
+	}
 }
 
 void setup() {
-	pinMode(requestProcessedPin, OUTPUT);
-	pinMode(wiFiSetUpFinishedLed, OUTPUT);
+	// Настраивает выводы платы 4,5,6,7 на вывод сигналов
+	for (int i = 4; i <= 7; i++) {
+		pinMode(i, OUTPUT);
+	}
 	setupWiFiConnection();
-	digitalWrite(wiFiSetUpFinishedLed, ledState);
 }
 
 String getCurrentAssignedIP() {
 	espPort.println("AT+CIFSR"); // read IP configuration
-	String ipResponse = readESPOutput(false, 15);
+	String ipResponse = readESPOutput(true, 20);
 	int ipStartIndex = ipResponse.indexOf("STAIP,\"");
 	if (ipStartIndex > -1) {
 		ipResponse = ipResponse.substring(ipStartIndex + 7,
 				ipResponse.indexOf("\"\r"));
 	} else {
-		ipResponse = (String) NULL;
+		ipResponse = "0.0.0.0";
 	}
 	return ipResponse;
 }
@@ -109,11 +198,17 @@ void loop() {
 	clearBuffer();
 }
 
-String getMoveFinishedPayload(const String& moveType) {
-	String ipAddressPayload = "{\"moveType\" :\"";
-	ipAddressPayload += moveType;
-	ipAddressPayload += "\",\"status\":\"FINISHED\"}";
-	return ipAddressPayload;
+void move() {
+	// TODO move here
+	//если дистанция до предмета меньше 15см, то останавливаемся
+	long dist = ultrasonic.Ranging(CM);
+	//Serial.println(dist);
+	if (dist > 15) {
+		drive();
+	} else {
+		turnAround();
+		stopPlatfom();
+	}
 }
 
 void processIncomingRequest() {
@@ -130,37 +225,29 @@ void processIncomingRequest() {
 		if ((strncmp(pb, "POST / ", 6) == 0)
 				|| (strncmp(pb, "POST /?", 6) == 0)) {
 			clearSerialBuffer();
-			String moveType;
-			if (strcasestr(pb, "/move/to") != NULL) {
-				ledState = HIGH;
-				moveType = MOVE_TO_MACHINE;
-			} else if (strcasestr(pb, "/move/back") != NULL) {
-				ledState = LOW;
-				moveType = MOVE_BACK;
+			String status;
+			if (strcasestr(pb, "/move") != NULL) {
+				status = "MOVING_TO";
+			} else if (strcasestr(pb, "/back") != NULL) {
+				status = "MOVING_BACK";
 			} else {
-				moveType = ERROR;
+				status = "ERROR";
 			}
 
-			sendResponse(ch_id, moveType);
-			digitalWrite(requestProcessedPin, ledState);
-			if (!ERROR.equals(moveType)) {
-				if (movePlatform(moveType)) {
-					sendRequestToServer("POST", "coffee/move/",
-							getMoveFinishedPayload(moveType));
-				}
-			}
+			sendResponse(ch_id, status);
+			// TODO move here
 
+			//если дистанция до предмета меньше 15см, то останавливаемся
+			move();
 		}
 	}
 }
 
-boolean movePlatform(String moveType) {
-	if (moveType.equals(MOVE_TO_MACHINE)) {
-		// MOVE TO MACHINE
-	} else {
-		// MOVE TO CLIENT
-	}
-	return true;
+void cipSend(int ch_id, const String& header, const String& content) {
+	espPort.print("AT+CIPSEND=");
+	espPort.print(ch_id);
+	espPort.print(",");
+	espPort.println(header.length() + content.length());
 }
 
 void sendResponse(int ch_id, String status) {
@@ -180,23 +267,17 @@ void sendResponse(int ch_id, String status) {
 	header += (int) (content.length());
 	header += "\r\n\r\n";
 
-	espPort.print("AT+CIPSEND=");
-	espPort.print(ch_id);
-	espPort.print(",");
-	espPort.println(header.length() + content.length());
+	cipSend(ch_id, header, content);
 	delay(20);
 	sendMessageContents(header, content);
 }
 
-void sendRequestToServer(String method, String url, String jsonPayload) {
-	sendRequest(method, serverHost, serverPort, url, jsonPayload);
+boolean sendRequestToServer(String method, String url, String jsonPayload) {
+	return sendRequest(method, "192.168.1.103", "8080", url, jsonPayload);
 }
 
-/**
- * Sends HTTP (of specified method) request to given host:port and specified url.
- */
-void sendRequest(String method, String host, String port, String url,
-		String jsonPayload) {
+boolean performRealSend(const String& method, const String& url,
+		String jsonPayload, String host, String port) {
 	String header = method;
 	header += " /";
 	header += url;
@@ -211,20 +292,26 @@ void sendRequest(String method, String host, String port, String url,
 	header += port;
 	header += "\r\n";
 	header += "Connection: close\r\n\r\n";
+	cipSend(0, header, jsonPayload);
+	sendMessageContents(header, jsonPayload);
+	return readESPOutput(false, 15).indexOf("200 OK") > -1;
+}
 
+/**
+ * Sends HTTP (of specified method) request to given host:port and specified url.
+ */
+boolean sendRequest(String method, String host, String port, String url,
+		String jsonPayload) {
 	String atCommand = "AT+CIPSTART=0,\"TCP\",\"";
 	atCommand += host;
 	atCommand += "\",";
 	atCommand += port;
 	boolean startedConnection = callAndGetResponseESP8266(atCommand);
+
 	if (startedConnection) {
-		espPort.print("AT+CIPSEND=0,");
-		espPort.println((int) (header.length() + jsonPayload.length()));
-		sendMessageContents(header, jsonPayload);
-		Serial.print(readESPOutput(false, 35));
-		Serial.print(readESPOutput(false, 25));
+		return performRealSend(method, url, jsonPayload, host, port);
 	} else {
-		Serial.print("Connection failed.");
+		return false;
 	}
 }
 
@@ -233,7 +320,7 @@ void sendRequest(String method, String host, String port, String url,
  */
 void sendMessageContents(String header, String content) {
 	if (espPort.find(">")) {
-// wait for esp input
+		// wait for esp input
 		espPort.print(header);
 		espPort.print(content);
 		delay(200);
@@ -245,11 +332,12 @@ void sendMessageContents(String header, String content) {
  */
 boolean callAndGetResponseESP8266(String atCommandString) {
 	espPort.println(atCommandString);
+	delay(500);
 	return readESPOutput();
 }
 
 /**
- * Reads ESP output for 15 attempts and searches for OK string in response.
+ * Reads ESP output for 20 attempts and searches for OK string in response.
  * returns true if response contains OK, otherwise false.
  */
 boolean readESPOutput() {
@@ -281,11 +369,10 @@ String readESPOutput(boolean waitForOk, int attempts) {
 		temp = espPort.readString();
 		espResponse += temp;
 		espResponse.trim();
-		delay(10 * waitTimes);
 	}
 
 	if (waitForOk && espResponse.indexOf("OK") > -1) {
-// found OK -> assume finished
+		// found OK -> assume finished
 		return espResponse;
 	}
 	if (waitTimes <= attempts) {
@@ -311,7 +398,9 @@ void clearSerialBuffer(void) {
 	while (espPort.available() > 0) {
 		espPort.read();
 	}
-	espPort.flush();
+	while (Serial.available() > 0) {
+		Serial.read();
+	}
 }
 
 void clearBuffer(void) {
@@ -320,16 +409,72 @@ void clearBuffer(void) {
 	}
 }
 
-String getRegisterJsonPayload(const String& ipAddress) {
-	String ipAddressPayload = "{\"ipAddress\" :\"";
+String getRegisterJsonPayload(const String ipAddress) {
+	String ipAddressPayload = "{\"ip\" :\"";
 	ipAddressPayload += ipAddress;
-	ipAddressPayload += "\", \"type\":\"";
-	ipAddressPayload += stationType;
-	ipAddressPayload += "\",\"openedPort\":\"";
-	ipAddressPayload += stationOpenedPort;
-	ipAddressPayload += "\",\"componentName\":\"";
-	ipAddressPayload += stationName;
-	ipAddressPayload += "\"}";
+	// Change ip address and here
+	ipAddressPayload +=
+			"\", \"ty\":\"PLATFORM\",\"port\":\"88\",\"name\":\"Apollo\"}";
 	return ipAddressPayload;
+}
+
+void drive() {
+	boolean left = true;
+	boolean right = false;
+
+	// В какое состояние нужно перейти?
+
+	if (left == right) {
+		// под сенсорами всё белое или всё чёрное
+		// едем вперёд
+		runForward();
+	} else if (left) {
+		// левый сенсор упёрся в трек
+		// поворачиваем налево
+		steerRight();
+	} else {
+		steerLeft();
+	}
+
+}
+
+void turnAround() {
+
+//поставим левый сенсор на дорожку
+	while (!digitalRead(LEFT_SENSOR_PIN)) {
+// Замедляем правое колесо относительно левого,
+// чтобы начать поворот
+		analogWrite(SPEED_RIGHT, 50);
+		analogWrite(SPEED_LEFT, 50);
+
+		digitalWrite(DIR_LEFT, HIGH);
+		digitalWrite(DIR_RIGHT, LOW);
+
+	}
+
+//поворачиваемся пока левый сенсор не окажется на белом
+	while (digitalRead(LEFT_SENSOR_PIN)) {
+// Замедляем правое колесо относительно левого,
+// чтобы начать поворот
+		analogWrite(SPEED_RIGHT, 50);
+		analogWrite(SPEED_LEFT, 50);
+
+		digitalWrite(DIR_LEFT, HIGH);
+		digitalWrite(DIR_RIGHT, LOW);
+
+	}
+
+//доводим сенсор уже до черной линии
+	while (!digitalRead(LEFT_SENSOR_PIN)) {
+// Замедляем правое колесо относительно левого,
+// чтобы начать поворот
+		analogWrite(SPEED_RIGHT, 50);
+		analogWrite(SPEED_LEFT, 50);
+
+		digitalWrite(DIR_LEFT, HIGH);
+		digitalWrite(DIR_RIGHT, LOW);
+
+	}
+
 }
 
