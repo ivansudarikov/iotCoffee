@@ -235,10 +235,14 @@ void processIncomingRequest() {
 			}
 
 			sendResponse(ch_id, status);
+			clearSerialBuffer();
 			// TODO move here
 
 			//если дистанция до предмета меньше 15см, то останавливаемся
 			move();
+			// Notifies server that component finished action
+			sendRequestToServer("POST", "/coffee/state/",
+					"{\"state\":\"FINISHED\"}");
 		}
 	}
 }
@@ -270,6 +274,10 @@ void sendResponse(int ch_id, String status) {
 	cipSend(ch_id, header, content);
 	delay(20);
 	sendMessageContents(header, content);
+	delay(200);
+	espPort.print("AT+CIPCLOSE=");
+	espPort.println(ch_id);
+	readESPOutput(2);
 }
 
 boolean sendRequestToServer(String method, String url, String jsonPayload) {
