@@ -5,7 +5,7 @@ SoftwareSerial espPort(10, 11);
 
 #define BUFFER_SIZE 96
 
-const int requestProcessedPin = 12;
+const int requestProcessedPin = 13;
 const int wiFiSetUpFinishedLed = 13;
 
 const int largeCoffeePin = 4;
@@ -16,7 +16,7 @@ char buffer[BUFFER_SIZE];
 
 void setupWiFiConnection() {
 	init: releaseResources();
-	espPort.setTimeout(1000);
+	espPort.setTimeout(750);
 	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
 	clearSerialBuffer();
@@ -140,12 +140,20 @@ void processIncomingRequest() {
 			}
 
 			sendResponse(ch_id, status);
+			clearSerialBuffer();
 
 			digitalWrite(requestProcessedPin, ledState);
 			if (coffePin != -1) {
 				digitalWrite(coffePin, HIGH);
 				delay(100);
 				digitalWrite(coffePin, LOW);
+				long delayTime = 30000;
+				if (coffePin == largeCoffeePin) {
+					delayTime = 60000;
+				}
+				delay(delayTime);
+				sendRequestToServer("POST", "/coffee/state/",
+						"{\"state\":\"FINISHED\"}");
 			}
 		}
 	}
@@ -178,10 +186,14 @@ void sendResponse(int ch_id, String status) {
 	cipSend(ch_id, header, content);
 	delay(20);
 	sendMessageContents(header, content);
+	delay(200);
+	espPort.print("AT+CIPCLOSE=");
+	espPort.println(ch_id);
+	readESPOutput(2);
 }
 
 boolean sendRequestToServer(String method, String url, String jsonPayload) {
-	return sendRequest(method, "192.168.1.110", "8080", url, jsonPayload);
+	return sendRequest(method, "192.168.1.112", "8080", url, jsonPayload);
 }
 
 boolean performRealSend(const String& method, const String& url,
