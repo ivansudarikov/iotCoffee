@@ -35,7 +35,7 @@ void setupWiFiConnection() {
 		releaseResources();
 		goto init;
 	}
-	if (!connectToWiFi("HomeNet", "79045545893")) {
+	if (!connectToWiFi("asus", "12345678")) {
 		releaseResources();
 		goto init;
 	}
@@ -193,7 +193,7 @@ void sendResponse(int ch_id, String status) {
 }
 
 boolean sendRequestToServer(String method, String url, String jsonPayload) {
-	return sendRequest(method, "192.168.1.112", "8080", url, jsonPayload);
+	return sendRequest(method, "192.168.43.183", "8080", url, jsonPayload);
 }
 
 boolean performRealSend(const String& method, const String& url,
@@ -214,7 +214,8 @@ boolean performRealSend(const String& method, const String& url,
 	header += "Connection: close\r\n\r\n";
 	cipSend(0, header, jsonPayload);
 	sendMessageContents(header, jsonPayload);
-	return readESPOutput(false, 15).indexOf("200 OK") > -1;
+	String result = readESPOutput(false, 15);
+	return result.indexOf("SEND OK") > -1;
 }
 
 /**

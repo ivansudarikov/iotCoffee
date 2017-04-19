@@ -5,7 +5,7 @@ SoftwareSerial espPort(12, 13);
 ///////////////ARDUINO RX, TX -> TX, RX esp8266
 Ultrasonic ultrasonic(11, 10);
 
-#define BUFFER_SIZE 96
+#define BUFFER_SIZE 48
 
 // Моторы подключаются к клеммам M1+,M1-,M2+,M2-
 // Motor shield использует четыре контакта 6,5,7,4 для управления моторами
@@ -17,7 +17,8 @@ Ultrasonic ultrasonic(11, 10);
 #define RIGHT_SENSOR_PIN 8
 
 // Скорость, с которой мы движемся вперёд (0-255)
-#define SPEED 50
+#define SPEED 58
+#define AROUND_SPEED 48
 
 // Скорость прохождения сложных участков
 #define SLOW_SPEED 50
@@ -110,52 +111,54 @@ void setupWiFiConnection() {
 	Serial.begin(9600); // Serial logging
 	espPort.begin(9600); // ESP8266
 	clearSerialBuffer();
-	if (!callAndGetResponseESP8266("AT+RST")) {
+	if (!callAndGetResponseESP8266(F("AT+RST"))) {
 		releaseResources();
 		goto init;
 	}
 	clearSerialBuffer();
-	if (!callAndGetResponseESP8266("AT+CWMODE=1")) {
+	if (!callAndGetResponseESP8266(F("AT+CWMODE=1"))) {
 		// client mode
 		releaseResources();
 		goto init;
 	}
-	if (!callAndGetResponseESP8266("AT+CWAUTOCONN=0")) {
+	if (!callAndGetResponseESP8266(F("AT+CWAUTOCONN=0"))) {
 		// client mode
 		releaseResources();
 		goto init;
 	}
-	if (!connectToWiFi("HomeNet", "79045545893")) {
+	if (!connectToWiFi("asus", "12345678")) {
 		releaseResources();
 		goto init;
 	}
-	if (!callAndGetResponseESP8266("AT+CIPMODE=0")) {
+	if (!callAndGetResponseESP8266(F("AT+CIPMODE=0"))) {
 		// normal transfer mode
 		releaseResources();
 		goto init;
 	}
-	if (!callAndGetResponseESP8266("AT+CIPMUX=1")) {
+	if (!callAndGetResponseESP8266(F("AT+CIPMUX=1"))) {
 		// allow multiple connection.
 		releaseResources();
 		goto init;
 	};
-	if (!callAndGetResponseESP8266("AT+CIPSERVER=1,88")) {
+	if (!callAndGetResponseESP8266(F("AT+CIPSERVER=1,88"))) {
 		// set up server on 88 port
 		releaseResources();
 		goto init;
 	}
 	clearSerialBuffer();
-	callAndGetResponseESP8266("AT+CIPSTO=2"); // server timeout, 2 sec
+	callAndGetResponseESP8266(F("AT+CIPSTO=2")); // server timeout, 2 sec
 	String ipAddress = getCurrentAssignedIP();
-	if (ipAddress.indexOf("0.0.0.0") > -1) {
+	if (ipAddress.indexOf(F("0.0.0.0")) > -1) {
 		goto init;
 	}
-	if (!sendRequestToServer("POST", "coffee/register/",
+	if (!sendRequestToServer("POST", F("coffee/register/"),
 			getRegisterJsonPayload(ipAddress))) {
 		while (true) {
 			Serial.println("Crap");
 			delay(1000);
 		}
+	} else {
+		Serial.println(F("Registered"));
 	}
 }
 
@@ -168,14 +171,14 @@ void setup() {
 }
 
 String getCurrentAssignedIP() {
-	espPort.println("AT+CIFSR"); // read IP configuration
+	espPort.println(F("AT+CIFSR")); // read IP configuration
 	String ipResponse = readESPOutput(true, 20);
 	int ipStartIndex = ipResponse.indexOf("STAIP,\"");
 	if (ipStartIndex > -1) {
 		ipResponse = ipResponse.substring(ipStartIndex + 7,
 				ipResponse.indexOf("\"\r"));
 	} else {
-		ipResponse = "0.0.0.0";
+		ipResponse = F("0.0.0.0");
 	}
 	return ipResponse;
 }
@@ -198,14 +201,36 @@ void loop() {
 	clearBuffer();
 }
 
-void move() {
+void move(bool forward) {
 	// TODO move here
 	//если дистанция до предмета меньше 15см, то останавливаемся
-	long dist = ultrasonic.Ranging(CM);
-	//Serial.println(dist);
-	if (dist > 15) {
-		drive();
+	if (forward) {
+		while (true) {
+			//TODO forward
+			long dist = ultrasonic.Ranging(CM);
+			//Serial.println(dist);
+			if (dist > 7) {
+				drive();
+			} else {
+				//turnAround();
+				stopPlatfom();
+				break;
+			}
+		}
 	} else {
+		turnAround();
+		while (true) {
+			//TODO forward
+			long dist = ultrasonic.Ranging(CM);
+			//Serial.println(dist);
+			if (dist > 7) {
+				drive();
+			} else {
+				//turnAround();
+				stopPlatfom();
+				break;
+			}
+		}
 		turnAround();
 		stopPlatfom();
 	}
@@ -225,30 +250,33 @@ void processIncomingRequest() {
 		if ((strncmp(pb, "POST / ", 6) == 0)
 				|| (strncmp(pb, "POST /?", 6) == 0)) {
 			clearSerialBuffer();
+			bool forward = false;
 			String status;
 			if (strcasestr(pb, "/move") != NULL) {
-				status = "MOVING_TO";
+				status = F("MOVING_TO");
+				forward = true;
 			} else if (strcasestr(pb, "/back") != NULL) {
-				status = "MOVING_BACK";
+				status = F("MOVING_BACK");
+				forward = false;
 			} else {
-				status = "ERROR";
+				status = F("ERROR");
 			}
 
 			sendResponse(ch_id, status);
+			if (status.indexOf(F("ERROR")) > 0) {
+				return;
+			}
 			clearSerialBuffer();
-			// TODO move here
-
-			//если дистанция до предмета меньше 15см, то останавливаемся
-			move();
+			move(forward);
 			// Notifies server that component finished action
-			sendRequestToServer("POST", "/coffee/state/",
-					"{\"state\":\"FINISHED\"}");
+			sendRequestToServer("POST", F("/coffee/state/"),
+					F("{\"state\":\"FINISHED\"}"));
 		}
 	}
 }
 
 void cipSend(int ch_id, const String& header, const String& content) {
-	espPort.print("AT+CIPSEND=");
+	espPort.print(F("AT+CIPSEND="));
 	espPort.print(ch_id);
 	espPort.print(",");
 	espPort.println(header.length() + content.length());
@@ -275,13 +303,13 @@ void sendResponse(int ch_id, String status) {
 	delay(20);
 	sendMessageContents(header, content);
 	delay(200);
-	espPort.print("AT+CIPCLOSE=");
+	espPort.print(F("AT+CIPCLOSE="));
 	espPort.println(ch_id);
 	readESPOutput(2);
 }
 
 boolean sendRequestToServer(String method, String url, String jsonPayload) {
-	return sendRequest(method, "192.168.1.103", "8080", url, jsonPayload);
+	return sendRequest(method, F("192.168.43.183"), "8080", url, jsonPayload);
 }
 
 boolean performRealSend(const String& method, const String& url,
@@ -302,7 +330,7 @@ boolean performRealSend(const String& method, const String& url,
 	header += "Connection: close\r\n\r\n";
 	cipSend(0, header, jsonPayload);
 	sendMessageContents(header, jsonPayload);
-	return readESPOutput(false, 15).indexOf("200 OK") > -1;
+	return readESPOutput(false, 15).indexOf(F("SEND OK")) > -1;
 }
 
 /**
@@ -310,7 +338,7 @@ boolean performRealSend(const String& method, const String& url,
  */
 boolean sendRequest(String method, String host, String port, String url,
 		String jsonPayload) {
-	String atCommand = "AT+CIPSTART=0,\"TCP\",\"";
+	String atCommand = F("AT+CIPSTART=0,\"TCP\",\"");
 	atCommand += host;
 	atCommand += "\",";
 	atCommand += port;
@@ -390,7 +418,7 @@ String readESPOutput(boolean waitForOk, int attempts) {
 }
 
 boolean connectToWiFi(String networkSSID, String networkPASS) {
-	String cmd = "AT+CWJAP=\"";
+	String cmd = F("AT+CWJAP=\"");
 	cmd += networkSSID;
 	cmd += "\",\"";
 	cmd += networkPASS;
@@ -421,14 +449,14 @@ String getRegisterJsonPayload(const String ipAddress) {
 	String ipAddressPayload = "{\"ip\" :\"";
 	ipAddressPayload += ipAddress;
 	// Change ip address and here
-	ipAddressPayload +=
-			"\", \"ty\":\"PLATFORM\",\"port\":\"88\",\"name\":\"Apollo\"}";
+	ipAddressPayload += F(
+			"\", \"ty\":\"PLATFORM\",\"port\":\"88\",\"name\":\"ap\"}");
 	return ipAddressPayload;
 }
 
 void drive() {
-	boolean left = true;
-	boolean right = false;
+	boolean left = !digitalRead(LEFT_SENSOR_PIN);
+	boolean right = !digitalRead(RIGHT_SENSOR_PIN);
 
 	// В какое состояние нужно перейти?
 
@@ -452,8 +480,8 @@ void turnAround() {
 	while (!digitalRead(LEFT_SENSOR_PIN)) {
 // Замедляем правое колесо относительно левого,
 // чтобы начать поворот
-		analogWrite(SPEED_RIGHT, 50);
-		analogWrite(SPEED_LEFT, 50);
+		analogWrite(SPEED_RIGHT, AROUND_SPEED);
+		analogWrite(SPEED_LEFT, AROUND_SPEED);
 
 		digitalWrite(DIR_LEFT, HIGH);
 		digitalWrite(DIR_RIGHT, LOW);
@@ -464,8 +492,8 @@ void turnAround() {
 	while (digitalRead(LEFT_SENSOR_PIN)) {
 // Замедляем правое колесо относительно левого,
 // чтобы начать поворот
-		analogWrite(SPEED_RIGHT, 50);
-		analogWrite(SPEED_LEFT, 50);
+		analogWrite(SPEED_RIGHT, AROUND_SPEED);
+		analogWrite(SPEED_LEFT, AROUND_SPEED);
 
 		digitalWrite(DIR_LEFT, HIGH);
 		digitalWrite(DIR_RIGHT, LOW);
@@ -476,8 +504,8 @@ void turnAround() {
 	while (!digitalRead(LEFT_SENSOR_PIN)) {
 // Замедляем правое колесо относительно левого,
 // чтобы начать поворот
-		analogWrite(SPEED_RIGHT, 50);
-		analogWrite(SPEED_LEFT, 50);
+		analogWrite(SPEED_RIGHT, AROUND_SPEED);
+		analogWrite(SPEED_LEFT, AROUND_SPEED);
 
 		digitalWrite(DIR_LEFT, HIGH);
 		digitalWrite(DIR_RIGHT, LOW);
@@ -485,4 +513,3 @@ void turnAround() {
 	}
 
 }
-
